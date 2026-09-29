@@ -1,10 +1,12 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from pymongo import MongoClient, DESCENDING
+from gridfs import GridFS
 from dotenv import load_dotenv
 from datetime import datetime, timezone, timedelta
 import os
 import uuid
+import io
 
 
 load_dotenv()
@@ -28,16 +30,6 @@ if not MONGODB_URI:
 
 # ============================================================
 # AVAILABLE GENRES
-# ============================================================
-#
-# IMPORTANT:
-# These values map the API genre name to the MongoDB
-# collection name.
-#
-# Example:
-#
-# "Punjabi" -> songs_punjabi
-#
 # ============================================================
 
 GENRE_COLLECTIONS = {
@@ -88,6 +80,15 @@ playback_collection = db["playback_sessions"]
 
 history_collection = db["play_history"]
 
+images_collection = db["images"]
+
+
+# ============================================================
+# GRIDFS
+# ============================================================
+
+gridfs = GridFS(db)
+
 
 print("MongoDB connected successfully.")
 
@@ -99,19 +100,14 @@ print("MongoDB connected successfully.")
 def get_genre_collection(genre):
 
     if not genre:
-
         return None
-
 
     collection_name = GENRE_COLLECTIONS.get(
         genre
     )
 
-
     if not collection_name:
-
         return None
-
 
     return db[collection_name]
 
@@ -120,46 +116,25 @@ def get_genre_collection(genre):
 # INDEXES
 # ============================================================
 
-
-# ------------------------------------------------------------
-# CREATE INDEXES FOR ALL GENRE COLLECTIONS
-# ------------------------------------------------------------
-
 for genre, collection_name in GENRE_COLLECTIONS.items():
 
     collection = db[collection_name]
 
-
-    # UUID must be unique inside each genre collection
-
     collection.create_index(
-
         [("uuid", 1)],
-
         unique=True
-
     )
 
-
-    # YouTube video ID
-
     collection.create_index(
-
         [("youtube.videoId", 1)]
-
     )
 
-
-    # Song search
-
     collection.create_index(
-
         [
             ("song", 1),
             ("album", 1),
             ("songName", 1)
         ]
-
     )
 
 
@@ -168,11 +143,8 @@ for genre, collection_name in GENRE_COLLECTIONS.items():
 # ------------------------------------------------------------
 
 playback_collection.create_index(
-
     [("clientId", 1)],
-
     unique=True
-
 )
 
 
@@ -181,12 +153,10 @@ playback_collection.create_index(
 # ------------------------------------------------------------
 
 history_collection.create_index(
-
     [
         ("clientId", 1),
         ("playedAt", DESCENDING)
     ]
-
 )
 
 
@@ -195,9 +165,7 @@ history_collection.create_index(
 # ------------------------------------------------------------
 
 playback_collection.create_index(
-
     [("lastSeen", DESCENDING)]
-
 )
 
 
@@ -208,19 +176,21 @@ playback_collection.create_index(
 def serialize_song(song):
 
     if not song:
-
         return None
-
 
     return {
 
-        "uuid": song.get("uuid"),
+        "uuid":
+            song.get("uuid"),
 
-        "song": song.get("song"),
+        "song":
+            song.get("song"),
 
-        "album": song.get("album"),
+        "album":
+            song.get("album"),
 
-        "songName": song.get("songName"),
+        "songName":
+            song.get("songName"),
 
         "originalDateCreated":
             song.get("originalDateCreated"),
@@ -247,11 +217,8 @@ def get_random_song(genre):
         genre
     )
 
-
     if songs_collection is None:
-
         return None
-
 
     cursor = songs_collection.aggregate(
 
@@ -266,7 +233,6 @@ def get_random_song(genre):
         allowDiskUse=False
 
     )
-
 
     return next(
         cursor,
@@ -314,16 +280,13 @@ def get_genres():
 
     genres = []
 
-
     for genre, collection_name in GENRE_COLLECTIONS.items():
 
         collection = db[
             collection_name
         ]
 
-
         count = collection.count_documents({})
-
 
         genres.append({
 
@@ -338,7 +301,6 @@ def get_genres():
 
         })
 
-
     return jsonify({
 
         "success":
@@ -351,27 +313,151 @@ def get_genres():
 
 
 # ============================================================
+# API
+# GET BACKGROUND IMAGE
+#
+# GET /api/images/Punjabi
+# GET /api/images/Hindi
+# GET /api/images/English
+# GET /api/images/Haryanvi
+#
+# The image is ALREADY stored in MongoDB GridFS.
+# This API only retrieves it.
+# ============================================================
+
+@app.route(
+    "/api/images/<genre>",
+    methods=["GET"]
+)
+def get_background_image(genre):
+
+    # --------------------------------------------------------
+    # Validate genre
+    # --------------------------------------------------------
+
+    if genre not in GENRE_COLLECTIONS:
+
+        return jsonify({
+
+            "success":
+                False,
+
+            "message":
+                "Invalid genre",
+
+            "availableGenres":
+                list(
+                    GENRE_COLLECTIONS.keys()
+                )
+
+        }), 400
+
+
+    # --------------------------------------------------------
+    # Find image metadata
+    # --------------------------------------------------------
+
+    image_document = images_collection.find_one({
+
+        "genre":
+            genre
+
+    })
+
+
+    if not image_document:
+
+        return jsonify({
+
+            "success":
+                False,
+
+            "message":
+                f"No background image found for {genre}"
+
+        }), 404
+
+
+    # --------------------------------------------------------
+    # Get GridFS ID
+    # --------------------------------------------------------
+
+    gridfs_id = image_document.get(
+        "gridfs_id"
+    )
+
+
+    if not gridfs_id:
+
+        return jsonify({
+
+            "success":
+                False,
+
+            "message":
+                "gridfs_id is missing"
+
+        }), 404
+
+
+    # --------------------------------------------------------
+    # Retrieve image from GridFS
+    # --------------------------------------------------------
+
+    try:
+
+        image_file = gridfs.get(
+            gridfs_id
+        )
+
+    except Exception as e:
+
+        print(
+            "GridFS error:",
+            e
+        )
+
+        return jsonify({
+
+            "success":
+                False,
+
+            "message":
+                "Image not found in GridFS"
+
+        }), 404
+
+
+    # --------------------------------------------------------
+    # Return image directly
+    # --------------------------------------------------------
+
+    return send_file(
+
+        io.BytesIO(
+            image_file.read()
+        ),
+
+        mimetype=
+            image_document.get(
+                "contentType",
+                "image/jpeg"
+            ),
+
+        download_name=
+            image_document.get(
+                "filename",
+                "background.jpg"
+            )
+
+    )
+
+
+# ============================================================
 # API 1
 # PLAYER ACTION
 #
 # POST /api/player/action
-#
-# NEXT:
-#
-# {
-#     "clientId": "abc123",
-#     "action": "next",
-#     "genre": "Punjabi"
-# }
-#
-#
-# PREVIOUS:
-#
-# {
-#     "clientId": "abc123",
-#     "action": "previous",
-#     "genre": "Punjabi"
-# }
 # ============================================================
 
 @app.route(
@@ -383,7 +469,6 @@ def player_action():
     data = request.get_json(
         silent=True
     ) or {}
-
 
     client_id = data.get(
         "clientId"
@@ -504,13 +589,6 @@ def player_action():
         )
 
 
-        # ----------------------------------------------------
-        # Update playback session
-        #
-        # Store genre so previous/history knows where
-        # the song came from.
-        # ----------------------------------------------------
-
         playback_collection.update_one(
 
             {
@@ -552,10 +630,6 @@ def player_action():
 
         )
 
-
-        # ----------------------------------------------------
-        # Add history
-        # ----------------------------------------------------
 
         history_collection.insert_one({
 
@@ -634,10 +708,6 @@ def player_action():
         }), 404
 
 
-    # --------------------------------------------------------
-    # Get latest 2 history records
-    # --------------------------------------------------------
-
     history = history_collection.find(
 
         {
@@ -683,10 +753,6 @@ def player_action():
         }), 404
 
 
-    # --------------------------------------------------------
-    # Previous song
-    # --------------------------------------------------------
-
     previous_song_id = history[1][
         "songId"
     ]
@@ -700,10 +766,6 @@ def player_action():
 
         previous_genre = genre
 
-
-    # --------------------------------------------------------
-    # Get correct genre collection
-    # --------------------------------------------------------
 
     previous_collection = get_genre_collection(
         previous_genre
@@ -722,10 +784,6 @@ def player_action():
 
         }), 400
 
-
-    # --------------------------------------------------------
-    # Get previous song
-    # --------------------------------------------------------
 
     previous_song = previous_collection.find_one(
 
@@ -754,10 +812,6 @@ def player_action():
         previous_song
     )
 
-
-    # --------------------------------------------------------
-    # Update playback session
-    # --------------------------------------------------------
 
     playback_collection.update_one(
 
@@ -814,14 +868,6 @@ def player_action():
 # USER HISTORY
 #
 # GET /api/player/history/<client_id>
-#
-# Example:
-#
-# /api/player/history/abc123?limit=20
-#
-# Optional:
-#
-# /api/player/history/abc123?limit=20&genre=Punjabi
 # ============================================================
 
 @app.route(
@@ -829,10 +875,6 @@ def player_action():
     methods=["GET"]
 )
 def player_history(client_id):
-
-    # --------------------------------------------------------
-    # Limit
-    # --------------------------------------------------------
 
     try:
 
@@ -855,10 +897,6 @@ def player_history(client_id):
         min(limit, 100)
     )
 
-
-    # --------------------------------------------------------
-    # Optional genre filter
-    # --------------------------------------------------------
 
     genre = request.args.get(
         "genre"
@@ -883,10 +921,6 @@ def player_history(client_id):
         }), 400
 
 
-    # --------------------------------------------------------
-    # Match
-    # --------------------------------------------------------
-
     match_stage = {
 
         "clientId":
@@ -899,10 +933,6 @@ def player_history(client_id):
 
         match_stage["genre"] = genre
 
-
-    # --------------------------------------------------------
-    # Get history
-    # --------------------------------------------------------
 
     history = list(
 
@@ -940,15 +970,6 @@ def player_history(client_id):
     )
 
 
-    # --------------------------------------------------------
-    # Fetch songs from their respective collections
-    #
-    # Because songs are stored in separate collections,
-    # MongoDB $lookup cannot dynamically choose a collection.
-    #
-    # So we fetch them efficiently in grouped queries.
-    # --------------------------------------------------------
-
     songs_by_genre = {}
 
 
@@ -958,18 +979,14 @@ def player_history(client_id):
             "genre"
         )
 
-
         if not item_genre:
-
             continue
-
 
         if item_genre not in songs_by_genre:
 
             songs_by_genre[
                 item_genre
             ] = []
-
 
         songs_by_genre[
             item_genre
@@ -980,10 +997,6 @@ def player_history(client_id):
         )
 
 
-    # --------------------------------------------------------
-    # Fetch songs
-    # --------------------------------------------------------
-
     song_map = {}
 
 
@@ -993,11 +1006,8 @@ def player_history(client_id):
             item_genre
         )
 
-
         if collection is None:
-
             continue
-
 
         songs = collection.find({
 
@@ -1023,10 +1033,6 @@ def player_history(client_id):
             )
 
 
-    # --------------------------------------------------------
-    # Build history response
-    # --------------------------------------------------------
-
     response_history = []
 
 
@@ -1048,7 +1054,6 @@ def player_history(client_id):
 
 
         if not song:
-
             continue
 
 
@@ -1135,8 +1140,6 @@ def active_users():
 # ============================================================
 # API 4
 # ACTIVE USERS BY GENRE
-#
-# GET /api/stats/active-users?genre=Punjabi
 # ============================================================
 
 @app.route(
@@ -1214,11 +1217,6 @@ def active_users_by_genre():
 # HEARTBEAT
 #
 # POST /api/player/heartbeat
-#
-# {
-#     "clientId": "abc123",
-#     "genre": "Punjabi"
-# }
 # ============================================================
 
 @app.route(
@@ -1235,7 +1233,6 @@ def heartbeat():
     client_id = data.get(
         "clientId"
     )
-
 
     genre = data.get(
         "genre"
