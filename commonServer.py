@@ -44,6 +44,27 @@ GENRE_COLLECTIONS = {
 
 }
 
+# ============================================================
+# BACKGROUND IMAGE FILE MAPPING
+# ============================================================
+
+IMAGE_FILES = {
+
+    "Punjabi":
+        "punjabi_screen_view.png",
+
+    "Hindi":
+        "hindi_screen_view.png",
+
+    "English":
+        "english_screen_view.png",
+
+    "Haryanvi":
+        "haryana_screen_view.png"
+
+}
+
+
 
 # ============================================================
 # MONGODB
@@ -335,7 +356,7 @@ def get_background_image(genre):
     # Validate genre
     # --------------------------------------------------------
 
-    if genre not in GENRE_COLLECTIONS:
+    if genre not in IMAGE_FILES:
 
         return jsonify({
 
@@ -347,20 +368,27 @@ def get_background_image(genre):
 
             "availableGenres":
                 list(
-                    GENRE_COLLECTIONS.keys()
+                    IMAGE_FILES.keys()
                 )
 
         }), 400
 
 
     # --------------------------------------------------------
-    # Find image metadata
+    # Get filename for genre
+    # --------------------------------------------------------
+
+    filename = IMAGE_FILES[genre]
+
+
+    # --------------------------------------------------------
+    # Find existing image metadata
     # --------------------------------------------------------
 
     image_document = images_collection.find_one({
 
-        "genre":
-            genre
+        "filename":
+            filename
 
     })
 
@@ -373,7 +401,13 @@ def get_background_image(genre):
                 False,
 
             "message":
-                f"No background image found for {genre}"
+                "Image not found",
+
+            "genre":
+                genre,
+
+            "filename":
+                filename
 
         }), 404
 
@@ -395,13 +429,16 @@ def get_background_image(genre):
                 False,
 
             "message":
-                "gridfs_id is missing"
+                "gridfs_id is missing",
+
+            "filename":
+                filename
 
         }), 404
 
 
     # --------------------------------------------------------
-    # Retrieve image from GridFS
+    # Get image from GridFS
     # --------------------------------------------------------
 
     try:
@@ -423,13 +460,16 @@ def get_background_image(genre):
                 False,
 
             "message":
-                "Image not found in GridFS"
+                "Image file not found in GridFS",
+
+            "error":
+                str(e)
 
         }), 404
 
 
     # --------------------------------------------------------
-    # Return image directly
+    # Return image
     # --------------------------------------------------------
 
     return send_file(
@@ -451,6 +491,7 @@ def get_background_image(genre):
             )
 
     )
+
 
 
 # ============================================================
@@ -1324,6 +1365,35 @@ def heartbeat():
         "success":
             True
 
+    })
+
+@app.route("/api/images/debug", methods=["GET"])
+def debug_images():
+
+    documents = list(
+        images_collection.find(
+            {},
+            {
+                "_id": 0,
+                "filename": 1,
+                "genre": 1,
+                "gridfs_id": 1,
+                "contentType": 1
+            }
+        )
+    )
+
+    return jsonify({
+        "count": len(documents),
+        "images": [
+            {
+                "filename": str(doc.get("filename")),
+                "genre": str(doc.get("genre")),
+                "gridfs_id": str(doc.get("gridfs_id")),
+                "contentType": str(doc.get("contentType"))
+            }
+            for doc in documents
+        ]
     })
 
 
